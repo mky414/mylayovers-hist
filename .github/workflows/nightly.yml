@@ -1,0 +1,44 @@
+name: Geçmiş uçuşlar
+
+on:
+  schedule:
+    - cron: '17 13 * * *'
+    - cron: '17 23 * * *'
+  workflow_dispatch:
+    inputs:
+      max:
+        description: 'Bu çalıştırmada en fazla kaç gün işlensin (ilk kurulumda 32)'
+        default: '4'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: hist
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Önceki veriyi al
+        run: |
+          git clone --depth 1 -b data "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" pub || mkdir -p pub
+          rm -rf pub/.git
+      - name: Arşivi işle
+        run: node scripts/update.mjs --max "${{ github.event.inputs.max || '4' }}" --out pub
+      - name: Yayınla (data dalı)
+        if: always()
+        run: |
+          [ -f pub/_meta.json ] || exit 0
+          cp DATA-LICENSE.md pub/README.md
+          cd pub
+          git init -q -b data
+          git add -A
+          git -c user.name="layover-bot" -c user.email="actions@users.noreply.github.com" commit -qm "veri $(date -u +%F)"
+          git push -qf "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" data
