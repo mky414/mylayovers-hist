@@ -10,9 +10,11 @@ const list=fs.readFileSync(args.list||'airports.txt','utf8').split(/\s+/).filter
 fs.mkdirSync(path.join(OUT,'twy'),{recursive:true});
 // koordinatlar
 const csv=await (await fetch('https://davidmegginson.github.io/ourairports-data/airports.csv',{headers:{'User-Agent':UA}})).text();
-const head=csv.slice(0,csv.indexOf('\n')).split(','); const I={ident:head.indexOf('ident'),lat:head.indexOf('latitude_deg'),lon:head.indexOf('longitude_deg'),type:head.indexOf('type')};
+const head=csv.slice(0,csv.indexOf('\n')).trim().split(',').map(x=>x.replace(/^"|"$/g,'')); const I={ident:head.indexOf('ident'),lat:head.indexOf('latitude_deg'),lon:head.indexOf('longitude_deg'),type:head.indexOf('type')};
 const coord={};
 for(const line of csv.split('\n')){ const f=line.match(/("([^"]|"")*"|[^,]*)(,|$)/g); if(!f) continue; const c=f.map(x=>x.replace(/,$/,'').replace(/^"|"$/g,'').replace(/""/g,'"')); const id=c[I.ident]; if(list.includes(id)&&c[I.type]!=='closed') coord[id]=[+c[I.lat],+c[I.lon]]; }
+if(Object.keys(coord).length<10){ console.error('koordinat listesi boş', Object.keys(coord).length, head.slice(0,6)); process.exit(1); }
+console.log('meydan', list.length, 'koordinat', Object.keys(coord).length);
 let done=0, skipped=0, failed=[];
 for(const icao of list){
   if(LIMIT&&done>=LIMIT) break;
