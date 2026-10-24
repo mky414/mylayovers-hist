@@ -1,0 +1,42 @@
+name: Taksi yolu haritaları
+
+on:
+  schedule:
+    - cron: '41 3 * * 1'
+  workflow_dispatch:
+    inputs:
+      maxage:
+        description: 'Kaç günden eski kayıtlar yenilensin'
+        default: '6'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: twy
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Önceki veriyi al
+        run: |
+          git clone --depth 1 -b data "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" pub || mkdir -p pub
+          rm -rf pub/.git
+      - name: OpenStreetMap'ten çek
+        run: node scripts/twy.mjs --list airports.txt --out pub --maxage "${{ github.event.inputs.maxage || '6' }}"
+      - name: Yayınla (data dalı)
+        if: always()
+        run: |
+          [ -f pub/twy/_meta.json ] || exit 0
+          cd pub
+          git init -q -b data
+          git add -A
+          git -c user.name="layover-bot" -c user.email="actions@users.noreply.github.com" commit -qm "twy $(date -u +%F)"
+          git push -qf "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" data
