@@ -1,5 +1,5 @@
 // Taksi yolu / pist geometrisi: OpenStreetMap (Overpass) → twy/{ICAO}.json
-// Haftada bir çalışır; meydan koordinatları OurAirports'tan. Çıktı: {icao,lat,lon,at,n,ways:[{t:'r'|'t',n:'C9',g:[[lat,lon],...]}]}
+// Haftada bir çalışır; meydan koordinatları OurAirports'tan. Çıktı: {v:2,icao,lat,lon,at,n,ways:[{t:'r'|'t',n:'C9',g:[[lat,lon],...]}], a,b:[çokgen], p:[[lat,lon,ref]] park, h:[[lat,lon,ref]] bekleme, rw:[{n,w}]}
 import fs from 'fs'; import path from 'path';
 const args=Object.fromEntries(process.argv.slice(2).join(' ').split('--').filter(Boolean).map(x=>{ const [k,...v]=x.trim().split(/\s+/); return [k, v.join(' ')||'1']; }));
 const OUT=args.out||'pub', MAXAGE=(+args.maxage||6)*864e5, LIMIT=+args.limit||0;
@@ -23,19 +23,25 @@ writeMeta();   // ara sonuçlar da yayınlansın (süre dolsa bile)
 const queue=[];
 for(const icao of list){
   const fp=path.join(OUT,'twy',icao+'.json');
-  try{ const old=JSON.parse(fs.readFileSync(fp,'utf8')); if(old.at&&Date.now()-old.at<MAXAGE&&old.n>0){ skipped++; continue; } }catch(e){}
+  try{ const old=JSON.parse(fs.readFileSync(fp,'utf8')); if(old.v>=2&&old.at&&Date.now()-old.at<MAXAGE&&old.n>0){ skipped++; continue; } }catch(e){}
   if(!coord[icao]){ failed.push(icao+':noll'); continue; }
   queue.push(icao);
 }
 console.log('çekilecek', queue.length, 'atlanan', skipped);
 async function fetchOne(u, icao){
   const ll=coord[icao];
-  const q=`[out:json][timeout:60];(way["aeroway"="runway"](around:5500,${ll[0]},${ll[1]});way["aeroway"="taxiway"](around:5500,${ll[0]},${ll[1]}););out geom tags;`;
+  const q=`[out:json][timeout:60];(way["aeroway"="runway"](around:5500,${ll[0]},${ll[1]});way["aeroway"="taxiway"](around:5500,${ll[0]},${ll[1]}););out geom tags;(way["aeroway"~"^(apron|terminal)$"](around:3500,${ll[0]},${ll[1]}););out geom tags;(nwr["aeroway"="parking_position"](around:3500,${ll[0]},${ll[1]});nwr["aeroway"="holding_position"](around:5500,${ll[0]},${ll[1]}););out center tags;`;
   const r=await fetch(u,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded','User-Agent':UA},body:'data='+encodeURIComponent(q),signal:AbortSignal.timeout(90000)});
   if(!r.ok){ const e=new Error('http '+r.status); e.status=r.status; e.retryAfter=+(r.headers.get('retry-after')||0); throw e; }
   const j=await r.json();
   if(j.remark&&/timed out|error/i.test(j.remark)) throw new Error('remark');
-  return (j.elements||[]).filter(e=>e.type==='way'&&Array.isArray(e.geometry)&&e.geometry.length>1).map(e=>({t:e.tags.aeroway==='runway'?'r':'t', n:String(e.tags.ref||e.tags.name||'').toUpperCase().trim(), g:e.geometry.map(p=>[+p.lat.toFixed(5),+p.lon.toFixed(5)])}));
+  const els=j.elements||[];
+  const ways=els.filter(e=>e.type==='way'&&Array.isArray(e.geometry)&&e.geometry.length>1&&/^(runway|taxiway)$/.test(e.tags&&e.tags.aeroway)).map(e=>({t:e.tags.aeroway==='runway'?'r':'t', n:String(e.tags.ref||e.tags.name||'').toUpperCase().trim(), g:e.geometry.map(p=>[+p.lat.toFixed(5),+p.lon.toFixed(5)])}));
+  const poly=e=>e.geometry.map(p=>[+p.lat.toFixed(5),+p.lon.toFixed(5)]);
+  const area=k=>els.filter(e=>e.type==='way'&&Array.isArray(e.geometry)&&e.geometry.length>2&&e.tags&&e.tags.aeroway===k).map(poly);
+  const pts=k=>els.filter(e=>e.tags&&e.tags.aeroway===k).map(e=>{ const c=e.center||e; return isFinite(c.lat)&&isFinite(c.lon)?[+c.lat.toFixed(5),+c.lon.toFixed(5),String(e.tags.ref||e.tags.name||'').toUpperCase().trim().slice(0,8)]:null; }).filter(Boolean);
+  const rw=els.filter(e=>e.tags&&e.tags.aeroway==='runway'&&parseFloat(e.tags.width)>10).map(e=>({n:String(e.tags.ref||'').toUpperCase().trim(), w:Math.round(parseFloat(e.tags.width))}));
+  return {ways, a:area('apron'), b:area('terminal'), p:pts('parking_position'), h:pts('holding_position'), rw};
 }
 // her ayna için bir işçi; kuyruktan sırayla alır
 const tries={};
@@ -44,8 +50,8 @@ async function worker(u){
   while(queue.length&&(!LIMIT||done<LIMIT)){
     const icao=queue.shift(); if(!icao) break;
     try{
-      const ways=await fetchOne(u, icao);
-      fs.writeFileSync(path.join(OUT,'twy',icao+'.json'), JSON.stringify({icao, lat:coord[icao][0], lon:coord[icao][1], at:Date.now(), n:ways.length, ways}));
+      const r=await fetchOne(u, icao), ways=r.ways;
+      fs.writeFileSync(path.join(OUT,'twy',icao+'.json'), JSON.stringify({v:2, icao, lat:coord[icao][0], lon:coord[icao][1], at:Date.now(), n:ways.length, ways, a:r.a, b:r.b, p:r.p, h:r.h, rw:r.rw}));
       done++; bad=0; console.log(icao, ways.length, '·', u.split('/')[2], '·', Math.round((Date.now()-T0)/6e4)+'dk'); writeMeta();
       await sleep(1500);
     }catch(e){
